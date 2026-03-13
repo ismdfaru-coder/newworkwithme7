@@ -24,6 +24,10 @@ import {
   ChevronRight,
   Play,
   Zap,
+  Eye,
+  Hand,
+  PanelRightOpen,
+  PanelRightClose,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ChatActionButtons, type ActionType } from "@/components/chat-action-buttons"
@@ -65,104 +69,22 @@ interface Artifact {
   url?: string
 }
 
-interface ManusResponse {
-  id?: string
-  task_id?: string
-  taskId?: string
-  status?: string
-  result?: string | object | Array<{ id?: string; status?: string; role?: string; type?: string; content?: string }>
-  output?: string | object | Array<{ id?: string; status?: string; role?: string; type?: string; content?: string }>
-  message?: string
-  error?: string
-  steps?: Array<{
-    type: string
-    description: string
-  }>
-  artifacts?: Array<{
-    type: string
-    title: string
-    content?: string | object
-    url?: string
-  }>
+interface FirecrawlSession {
+  id: string
+  cdpUrl: string
+  liveViewUrl: string
+  interactiveLiveViewUrl: string
 }
 
-// Helper function to extract string content from various response formats
-const extractContent = (data: ManusResponse): string => {
-  console.log("[v0] Agent extractContent - keys:", Object.keys(data))
-  
-  // Check for result field
-  if (data.result !== undefined && data.result !== null) {
-    console.log("[v0] Found result field, type:", typeof data.result)
-    if (typeof data.result === 'string') return data.result
-    if (typeof data.result === 'object') {
-      // Handle array of message objects
-      if (Array.isArray(data.result)) {
-        console.log("[v0] Result is array with", data.result.length, "items")
-        // Try to find assistant messages with content
-        const assistantContent = data.result
-          .filter((item) => item.role === 'assistant' && item.content)
-          .map((item) => item.content)
-          .join('\n\n')
-        if (assistantContent) return assistantContent
-        
-        // If no assistant messages, try all items with content
-        const allContent = data.result
-          .filter((item) => item.content)
-          .map((item) => item.content)
-          .join('\n\n')
-        if (allContent) return allContent
-      }
-      // Handle single message object with various content fields
-      const resultObj = data.result as Record<string, unknown>
-      console.log("[v0] Result object keys:", Object.keys(resultObj))
-      if (resultObj.content && typeof resultObj.content === 'string') return resultObj.content
-      if (resultObj.text && typeof resultObj.text === 'string') return resultObj.text
-      if (resultObj.message && typeof resultObj.message === 'string') return resultObj.message
-      if (resultObj.data && typeof resultObj.data === 'string') return resultObj.data
-      // Last resort - stringify the object but exclude metadata
-      const { id, status, role, type, ...contentFields } = resultObj
-      if (Object.keys(contentFields).length > 0) {
-        return JSON.stringify(contentFields, null, 2)
-      }
-    }
-  }
-  
-  // Check for output field
-  if (data.output !== undefined && data.output !== null) {
-    console.log("[v0] Found output field, type:", typeof data.output)
-    if (typeof data.output === 'string') return data.output
-    if (typeof data.output === 'object') {
-      if (Array.isArray(data.output)) {
-        const assistantContent = data.output
-          .filter((item) => item.role === 'assistant' && item.content)
-          .map((item) => item.content)
-          .join('\n\n')
-        if (assistantContent) return assistantContent
-        
-        const allContent = data.output
-          .filter((item) => item.content)
-          .map((item) => item.content)
-          .join('\n\n')
-        if (allContent) return allContent
-      }
-      const outputObj = data.output as Record<string, unknown>
-      if (outputObj.content && typeof outputObj.content === 'string') return outputObj.content
-      if (outputObj.text && typeof outputObj.text === 'string') return outputObj.text
-      if (outputObj.data && typeof outputObj.data === 'string') return outputObj.data
-    }
-  }
-  
-  // Fallback to message
-  if (data.message && typeof data.message === 'string') return data.message
-  
-  // Ultimate fallback - return stringified data (excluding known metadata)
-  const { id, task_id, taskId, status, steps, artifacts, error, ...remaining } = data
-  if (Object.keys(remaining).length > 0) {
-    console.log("[v0] Using fallback, remaining keys:", Object.keys(remaining))
-    return JSON.stringify(remaining, null, 2)
-  }
-  
-  return "No content received from API"
+interface FirecrawlResponse {
+  success?: boolean
+  id?: string
+  cdpUrl?: string
+  liveViewUrl?: string
+  interactiveLiveViewUrl?: string
+  result?: string
+  error?: string
+  message?: string
 }
 
 export default function AgentsPage() {
@@ -171,7 +93,6 @@ export default function AgentsPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [pollingTaskId, setPollingTaskId] = useState<string | null>(null)
   const [slideMode, setSlideMode] = useState<"idle" | "wizard" | "generating" | "viewing">("idle")
   const [slideWizardStep, setSlideWizardStep] = useState(0)
   const [slideDetails, setSlideDetails] = useState({ topic: "", audience: "", slideCount: "5", style: "professional" })
@@ -186,11 +107,19 @@ export default function AgentsPage() {
   const [isGeneratingNewSlides, setIsGeneratingNewSlides] = useState(false)
   const [generatedDocData, setGeneratedDocData] = useState<DocData | null>(null)
   const [generatedSlidesData, setGeneratedSlidesData] = useState<SlidesData | null>(null)
+  
+  // Firecrawl Browser Session State
+  const [browserSession, setBrowserSession] = useState<FirecrawlSession | null>(null)
+  const [showBrowserPanel, setShowBrowserPanel] = useState(false)
+  const [isBrowserLoading, setIsBrowserLoading] = useState(false)
+  const [browserResults, setBrowserResults] = useState<string[]>([])
+  const [showWorkWithMeButton, setShowWorkWithMeButton] = useState(false)
+  const [currentTask, setCurrentTask] = useState("")
+  
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
-const scrollToBottom = () => {
+  const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }
 
@@ -198,101 +127,252 @@ const scrollToBottom = () => {
     scrollToBottom()
   }, [messages])
 
-  // Cleanup polling on unmount
+  // Cleanup browser session on unmount
   useEffect(() => {
     return () => {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current)
+      if (browserSession?.id) {
+        fetch("/api/firecrawl", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "close", sessionId: browserSession.id }),
+        }).catch(console.error)
       }
+    }
+  }, [browserSession])
+
+  // Create Firecrawl browser session
+  const createBrowserSession = useCallback(async () => {
+    setIsBrowserLoading(true)
+    try {
+      const response = await fetch("/api/firecrawl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create" }),
+      })
+
+      const data: FirecrawlResponse = await response.json()
+
+      if (!response.ok || !data.id) {
+        throw new Error(data.error || "Failed to create browser session")
+      }
+
+      const session: FirecrawlSession = {
+        id: data.id,
+        cdpUrl: data.cdpUrl || "",
+        liveViewUrl: data.liveViewUrl || "",
+        interactiveLiveViewUrl: data.interactiveLiveViewUrl || "",
+      }
+
+      setBrowserSession(session)
+      setShowBrowserPanel(true)
+      return session
+    } catch (error) {
+      console.error("Error creating browser session:", error)
+      return null
+    } finally {
+      setIsBrowserLoading(false)
     }
   }, [])
 
-  const pollTaskStatus = useCallback(async (taskId: string, messageId: string) => {
+  // Execute code in browser session
+  const executeBrowserCode = useCallback(async (code: string, language: string = "node") => {
+    if (!browserSession?.id) return null
+
     try {
-      const response = await fetch(`/api/manus?taskId=${taskId}`)
-      const data: ManusResponse = await response.json()
+      const response = await fetch("/api/firecrawl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "execute",
+          sessionId: browserSession.id,
+          code,
+          language,
+        }),
+      })
+
+      const data: FirecrawlResponse = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to fetch task status")
+        throw new Error(data.error || "Failed to execute code")
       }
 
-      const status = data.status?.toLowerCase()
-
-      // Check if task is complete
-      if (status === "completed" || status === "done" || status === "finished" || status === "success" || data.result || data.output) {
-        // Stop polling
-        if (pollingIntervalRef.current) {
-          clearInterval(pollingIntervalRef.current)
-          pollingIntervalRef.current = null
-        }
-        setPollingTaskId(null)
-        setIsLoading(false)
-
-        const responseContent = extractContent(data)
-        
-        const artifacts: Artifact[] = (data.artifacts || []).map((a, i) => ({
-          id: crypto.randomUUID(),
-          type: a.type as Artifact["type"] || "document",
-          title: a.title || `Artifact ${i + 1}`,
-          content: typeof a.content === 'string' ? a.content : JSON.stringify(a.content),
-          url: a.url,
-        }))
-
-        setMessages(prev => prev.map(m => 
-          m.id === messageId 
-            ? { 
-                ...m, 
-                content: responseContent,
-                status: "completed",
-                steps: [
-                  ...(m.steps || []),
-                  {
-                    id: crypto.randomUUID(),
-                    type: "complete",
-                    description: "Task completed successfully",
-                    timestamp: new Date(),
-                  }
-                ],
-                artifacts: artifacts.length > 0 ? artifacts : undefined,
-              }
-            : m
-        ))
-      } else if (status === "failed" || status === "error") {
-        // Stop polling on error
-        if (pollingIntervalRef.current) {
-          clearInterval(pollingIntervalRef.current)
-          pollingIntervalRef.current = null
-        }
-        setPollingTaskId(null)
-        setIsLoading(false)
-
-        setMessages(prev => prev.map(m => 
-          m.id === messageId 
-            ? { 
-                ...m, 
-                content: data.error || data.message || "Task failed",
-                status: "error",
-                steps: [
-                  ...(m.steps || []),
-                  {
-                    id: crypto.randomUUID(),
-                    type: "complete",
-                    description: "Task failed",
-                    timestamp: new Date(),
-                  }
-                ]
-              }
-            : m
-        ))
+      if (data.result) {
+        setBrowserResults(prev => [...prev, data.result!])
       }
-      // If still processing, continue polling (do nothing here)
+
+      return data
     } catch (error) {
-      console.error("Error polling task status:", error)
+      console.error("Error executing browser code:", error)
+      return null
     }
-  }, [])
+  }, [browserSession])
+
+  // Close browser session
+  const closeBrowserSession = useCallback(async () => {
+    if (!browserSession?.id) return
+
+    try {
+      await fetch("/api/firecrawl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "close", sessionId: browserSession.id }),
+      })
+    } catch (error) {
+      console.error("Error closing browser session:", error)
+    } finally {
+      setBrowserSession(null)
+      setShowBrowserPanel(false)
+      setBrowserResults([])
+    }
+  }, [browserSession])
+
+  // Handle "Work with me" button click
+  const handleWorkWithMe = async () => {
+    if (!currentTask.trim()) return
+
+    setIsLoading(true)
+    setShowWorkWithMeButton(false)
+
+    // Create browser session first
+    const session = await createBrowserSession()
+    if (!session) {
+      setIsLoading(false)
+      return
+    }
+
+    // Add user message
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: currentTask,
+      timestamp: new Date(),
+    }
+
+    const assistantMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: "",
+      timestamp: new Date(),
+      status: "browsing",
+      steps: [
+        {
+          id: crypto.randomUUID(),
+          type: "browsing",
+          description: "Starting browser session...",
+          timestamp: new Date(),
+        }
+      ]
+    }
+
+    setMessages(prev => [...prev, userMessage, assistantMessage])
+
+    // Generate Playwright code based on the task
+    const playwrightCode = generatePlaywrightCode(currentTask)
+
+    // Update status
+    setMessages(prev => prev.map(m => 
+      m.id === assistantMessage.id 
+        ? { 
+            ...m, 
+            steps: [
+              ...(m.steps || []),
+              {
+                id: crypto.randomUUID(),
+                type: "browsing",
+                description: "Executing task in browser...",
+                timestamp: new Date(),
+              }
+            ]
+          }
+        : m
+    ))
+
+    // Execute the task
+    const result = await executeBrowserCode(playwrightCode)
+
+    // Update with results
+    setMessages(prev => prev.map(m => 
+      m.id === assistantMessage.id 
+        ? { 
+            ...m, 
+            content: result?.result || "Task completed. Check the browser panel to see the results.",
+            status: "completed",
+            steps: [
+              ...(m.steps || []),
+              {
+                id: crypto.randomUUID(),
+                type: "complete",
+                description: "Browser task completed",
+                timestamp: new Date(),
+              }
+            ]
+          }
+        : m
+    ))
+
+    setIsLoading(false)
+    setCurrentTask("")
+  }
+
+  // Generate Playwright code based on task description
+  const generatePlaywrightCode = (task: string): string => {
+    const taskLower = task.toLowerCase()
+    
+    // Extract URL if present
+    const urlMatch = task.match(/https?:\/\/[^\s]+/i)
+    const url = urlMatch ? urlMatch[0] : "https://www.google.com"
+
+    // Search task
+    if (taskLower.includes("search") || taskLower.includes("find") || taskLower.includes("look up")) {
+      const searchQuery = task.replace(/search|find|look up|for|on google|on the web/gi, "").trim()
+      return `
+await page.goto("https://www.google.com");
+await page.fill('textarea[name="q"]', '${searchQuery}');
+await page.keyboard.press('Enter');
+await page.waitForLoadState('networkidle');
+const results = await page.$$eval('h3', els => els.slice(0, 5).map(el => el.textContent));
+console.log(JSON.stringify(results, null, 2));
+      `.trim()
+    }
+
+    // Navigate and scrape
+    if (taskLower.includes("go to") || taskLower.includes("visit") || taskLower.includes("open")) {
+      return `
+await page.goto("${url}");
+await page.waitForLoadState('networkidle');
+const title = await page.title();
+const content = await page.$eval('body', el => el.innerText.slice(0, 1000));
+console.log("Page Title: " + title);
+console.log("Content Preview: " + content);
+      `.trim()
+    }
+
+    // Screenshot task
+    if (taskLower.includes("screenshot") || taskLower.includes("capture")) {
+      return `
+await page.goto("${url}");
+await page.waitForLoadState('networkidle');
+const title = await page.title();
+console.log("Captured screenshot of: " + title);
+      `.trim()
+    }
+
+    // Default: navigate and get info
+    return `
+await page.goto("${url}");
+await page.waitForLoadState('networkidle');
+const title = await page.title();
+const url_final = page.url();
+console.log("Navigated to: " + title + " (" + url_final + ")");
+    `.trim()
+  }
 
   const handleSubmit = async () => {
     if (!inputValue.trim() || isLoading) return
+
+    // Store the task and show "Work with me" button
+    setCurrentTask(inputValue.trim())
+    setShowWorkWithMeButton(true)
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -304,51 +384,33 @@ const scrollToBottom = () => {
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "",
+      content: "I can help you with this task! Click \"Work with me\" to start a live browser session where you can watch me work in real-time.",
       timestamp: new Date(),
-      status: "pending",
+      status: "completed",
       steps: [
         {
           id: crypto.randomUUID(),
           type: "thinking",
-          description: "Understanding your request...",
+          description: "Ready to start browser session",
           timestamp: new Date(),
         }
       ]
     }
 
-setMessages(prev => [...prev, userMessage, assistantMessage])
+    setMessages(prev => [...prev, userMessage, assistantMessage])
     setInputValue("")
-    setIsLoading(true)
-    
-    try {
-      // TURBO MODE: Use Cerebras for ultra-fast inference
-      if (turboMode) {
-        setMessages(prev => prev.map(m => 
-          m.id === assistantMessage.id 
-            ? { 
-                ...m, 
-                status: "processing",
-                steps: [
-                  ...(m.steps || []),
-                  {
-                    id: crypto.randomUUID(),
-                    type: "browsing",
-                    description: "Turbo processing...",
-                    timestamp: new Date(),
-                  }
-                ]
-              }
-            : m
-        ))
 
+    // If turbo mode is enabled, use Cerebras instead
+    if (turboMode) {
+      setShowWorkWithMeButton(false)
+      setIsLoading(true)
+      
+      try {
         const response = await fetch("/api/cerebras", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 
-            prompt: userMessage.content,
+            prompt: inputValue.trim(),
             model: "llama3.1-8b"
           }),
         })
@@ -359,16 +421,13 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
           throw new Error(data.error || "Failed to get response from Cerebras")
         }
 
-        const content = data.output || ""
-
         setMessages(prev => prev.map(m => 
           m.id === assistantMessage.id 
             ? { 
                 ...m, 
-                content,
+                content: data.output || "",
                 status: "completed",
                 steps: [
-                  ...(m.steps || []),
                   {
                     id: crypto.randomUUID(),
                     type: "complete",
@@ -379,133 +438,16 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
               }
             : m
         ))
-        
-        setIsLoading(false)
-        return
-      }
-
-      // Update to browsing status for agent mode
-      setMessages(prev => prev.map(m =>
-      m.id === assistantMessage.id
-      ? {
-      ...m,
-      status: "browsing",
-      steps: [
-      ...(m.steps || []),
-      {
-      id: crypto.randomUUID(),
-      type: "browsing",
-      description: "Browsing...",
-      timestamp: new Date(),
-      }
-      ]
-      }
-      : m
-      ))
-      
-      const response = await fetch("/api/manus", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ 
-          prompt: userMessage.content,
-          taskMode: "agent"
-        }),
-      })
-
-      const data: ManusResponse = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || data.message || "Failed to get response")
-      }
-
-      // Get task ID for polling
-      const taskId = data.task_id || data.taskId || data.id
-
-      if (taskId) {
-        // Update message with task ID
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "An error occurred"
         setMessages(prev => prev.map(m => 
           m.id === assistantMessage.id 
-            ? { 
-                ...m, 
-                taskId,
-                status: "browsing",
-                steps: [
-                  ...(m.steps || []),
-                  {
-                    id: crypto.randomUUID(),
-                    type: "searching",
-                    description: "Agent is working on your task...",
-                    timestamp: new Date(),
-                  }
-                ]
-              }
+            ? { ...m, content: errorMessage, status: "error" }
             : m
         ))
-
-        // Start polling for task status
-        setPollingTaskId(taskId)
-        pollingIntervalRef.current = setInterval(() => {
-          pollTaskStatus(taskId, assistantMessage.id)
-        }, 3000) // Poll every 3 seconds
-
-        // Also do an immediate check
-        await pollTaskStatus(taskId, assistantMessage.id)
-      } else {
-        // If no task ID, treat as immediate response
-        const responseContent = extractContent(data)
-        
-        const artifacts: Artifact[] = (data.artifacts || []).map((a, i) => ({
-          id: crypto.randomUUID(),
-          type: a.type as Artifact["type"] || "document",
-          title: a.title || `Artifact ${i + 1}`,
-          content: typeof a.content === 'string' ? a.content : JSON.stringify(a.content),
-          url: a.url,
-        }))
-
-        setMessages(prev => prev.map(m => 
-          m.id === assistantMessage.id 
-            ? { 
-                ...m, 
-                content: responseContent,
-                status: "completed",
-                steps: [
-                  ...(m.steps || []),
-                  {
-                    id: crypto.randomUUID(),
-                    type: "complete",
-                    description: "Task completed successfully",
-                    timestamp: new Date(),
-                  }
-                ],
-                artifacts: artifacts.length > 0 ? artifacts : undefined,
-              }
-            : m
-        ))
+      } finally {
         setIsLoading(false)
       }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "An error occurred"
-      setMessages(prev => prev.map(m => 
-        m.id === assistantMessage.id 
-          ? { 
-              ...m, 
-              content: errorMessage,
-              status: "error",
-              steps: [
-                ...(m.steps || []),
-                {
-                  id: crypto.randomUUID(),
-                  type: "complete",
-                  description: "Task failed",
-                  timestamp: new Date(),
-                }
-              ]
-            }
-          : m
-      ))
-      setIsLoading(false)
     }
   }
 
@@ -523,13 +465,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
   }
 
   const handleRetry = (messageId: string) => {
-    // Stop any existing polling
-    if (pollingIntervalRef.current) {
-      clearInterval(pollingIntervalRef.current)
-      pollingIntervalRef.current = null
-    }
-    setPollingTaskId(null)
-
     const messageIndex = messages.findIndex(m => m.id === messageId)
     if (messageIndex > 0) {
       const userMessage = messages[messageIndex - 1]
@@ -742,7 +677,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
     }, 3000)
 
     try {
-      // Call the AI API to generate slides
       const response = await fetch('/api/generate-slides', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -760,7 +694,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
 
       const data = await response.json()
       
-      // Get style colors
       const colors = {
         professional: { bg: "#1e293b", text: "#ffffff" },
         creative: { bg: "#7c3aed", text: "#ffffff" },
@@ -769,7 +702,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
       }
       const selectedColors = colors[slideDetails.style as keyof typeof colors] || colors.professional
 
-      // Transform API response to slides with colors
       const slides: Slide[] = data.slides.map((slide: { title: string; content: string[] }) => ({
         id: crypto.randomUUID(),
         title: slide.title,
@@ -829,16 +761,13 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
   }
 
   const downloadSlides = async () => {
-    // Dynamic import pptxgenjs to avoid SSR issues
     const pptxgen = (await import('pptxgenjs')).default
     
-    // Create presentation
     const pres = new pptxgen()
     pres.author = 'WorkwithMe AI'
     pres.title = slideDetails.topic
     pres.subject = `Presentation about ${slideDetails.topic}`
     
-    // Define color schemes for different styles
     const colorSchemes = {
       professional: { bg: '1e293b', title: 'FFFFFF', text: 'E2E8F0', accent: '3B82F6' },
       creative: { bg: '7c3aed', title: 'FFFFFF', text: 'E9D5FF', accent: 'F472B6' },
@@ -849,132 +778,68 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
 
     generatedSlides.forEach((slide, index) => {
       const pptSlide = pres.addSlide()
-      
-      // Set slide background
       pptSlide.background = { color: colors.bg }
       
       if (index === 0) {
-        // Title slide - centered, larger text
         pptSlide.addText(slide.title, {
-          x: 0.5,
-          y: '35%',
-          w: '90%',
-          h: 1.5,
-          fontSize: 44,
-          fontFace: 'Arial',
-          color: colors.title,
-          bold: true,
-          align: 'center',
+          x: 0.5, y: '35%', w: '90%', h: 1.5,
+          fontSize: 44, fontFace: 'Arial', color: colors.title, bold: true, align: 'center',
         })
         
-        // Subtitle/tagline
         if (slide.content.length > 0) {
           pptSlide.addText(slide.content.join(' | '), {
-            x: 0.5,
-            y: '55%',
-            w: '90%',
-            h: 0.75,
-            fontSize: 20,
-            fontFace: 'Arial',
-            color: colors.text,
-            align: 'center',
+            x: 0.5, y: '55%', w: '90%', h: 0.75,
+            fontSize: 20, fontFace: 'Arial', color: colors.text, align: 'center',
           })
         }
         
-        // Accent line
         pptSlide.addShape('rect' as pptxgen.ShapeType, {
-          x: '35%',
-          y: '50%',
-          w: '30%',
-          h: 0.05,
-          fill: { color: colors.accent },
+          x: '35%', y: '50%', w: '30%', h: 0.05, fill: { color: colors.accent },
         })
       } else if (index === generatedSlides.length - 1) {
-        // Thank you slide
         pptSlide.addText(slide.title, {
-          x: 0.5,
-          y: '40%',
-          w: '90%',
-          h: 1.5,
-          fontSize: 48,
-          fontFace: 'Arial',
-          color: colors.title,
-          bold: true,
-          align: 'center',
+          x: 0.5, y: '40%', w: '90%', h: 1.5,
+          fontSize: 48, fontFace: 'Arial', color: colors.title, bold: true, align: 'center',
         })
         
         if (slide.content.length > 0) {
           pptSlide.addText(slide.content.join('\n'), {
-            x: 0.5,
-            y: '55%',
-            w: '90%',
-            h: 1,
-            fontSize: 18,
-            fontFace: 'Arial',
-            color: colors.text,
-            align: 'center',
+            x: 0.5, y: '55%', w: '90%', h: 1,
+            fontSize: 18, fontFace: 'Arial', color: colors.text, align: 'center',
           })
         }
       } else {
-        // Content slides
-        // Title at top
         pptSlide.addText(slide.title, {
-          x: 0.5,
-          y: 0.5,
-          w: '90%',
-          h: 1,
-          fontSize: 32,
-          fontFace: 'Arial',
-          color: colors.title,
-          bold: true,
+          x: 0.5, y: 0.5, w: '90%', h: 1,
+          fontSize: 32, fontFace: 'Arial', color: colors.title, bold: true,
         })
         
-        // Accent line under title
         pptSlide.addShape('rect' as pptxgen.ShapeType, {
-          x: 0.5,
-          y: 1.4,
-          w: 1.5,
-          h: 0.05,
-          fill: { color: colors.accent },
+          x: 0.5, y: 1.4, w: 1.5, h: 0.05, fill: { color: colors.accent },
         })
         
-        // Bullet points
         const bulletPoints = slide.content.map(item => ({
           text: item,
           options: { 
             bullet: { type: 'bullet' as const, color: colors.accent },
-            color: colors.text,
-            fontSize: 18,
-            fontFace: 'Arial',
-            paraSpaceBefore: 12,
-            paraSpaceAfter: 6,
+            color: colors.text, fontSize: 18, fontFace: 'Arial',
+            paraSpaceBefore: 12, paraSpaceAfter: 6,
           }
         }))
         
         pptSlide.addText(bulletPoints, {
-          x: 0.5,
-          y: 1.8,
-          w: '90%',
-          h: 3.5,
-          valign: 'top',
+          x: 0.5, y: 1.8, w: '90%', h: 3.5, valign: 'top',
         })
       }
       
-      // Add slide number (except title slide)
       if (index > 0) {
         pptSlide.addText(`${index + 1}`, {
-          x: '90%',
-          y: '92%',
-          w: 0.5,
-          h: 0.3,
-          fontSize: 10,
-          color: colors.text,
-          align: 'right',
+          x: '90%', y: '92%', w: 0.5, h: 0.3,
+          fontSize: 10, color: colors.text, align: 'right',
         })
       }
     })
 
-    // Save the presentation
     await pres.writeFile({ fileName: `${slideDetails.topic.replace(/[^a-z0-9]/gi, '_')}_presentation.pptx` })
   }
 
@@ -1016,366 +881,469 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
   // Show chat view if there are messages
   if (messages.length > 0) {
     return (
-      <div className="flex h-full flex-col">
-        {/* Messages Area */}
-        <div className="flex-1 overflow-auto px-4 py-6">
-          <div className="mx-auto max-w-3xl space-y-6">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={cn(
-                  "flex gap-4",
-                  message.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
-                {message.role === "assistant" && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-blue-600">
-                    <Monitor className="h-4 w-4 text-white" />
-                  </div>
-                )}
-                
+      <div className="flex h-full">
+        {/* Main Chat Area */}
+        <div className={cn(
+          "flex h-full flex-col transition-all duration-300",
+          showBrowserPanel ? "w-1/2" : "w-full"
+        )}>
+          {/* Messages Area */}
+          <div className="flex-1 overflow-auto px-4 py-6">
+            <div className="mx-auto max-w-3xl space-y-6">
+              {messages.map((message) => (
                 <div
+                  key={message.id}
                   className={cn(
-                    "max-w-[80%] rounded-2xl px-4 py-3",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted"
+                    "flex gap-4",
+                    message.role === "user" ? "justify-end" : "justify-start"
                   )}
                 >
-                  {/* Processing Steps - Show "Browsing" for agent mode */}
-                  {message.role === "assistant" && message.steps && message.status !== "completed" && message.status !== "error" && (
-                    <div className="mb-3 space-y-2">
-                      {message.status === "browsing" && (
-                        <div className="flex items-center gap-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3">
-                          <div className="relative">
-                            <Monitor className="h-5 w-5 text-cyan-500" />
-                            <span className="absolute -right-1 -top-1 flex h-2 w-2">
-                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75"></span>
-                              <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-500"></span>
-                            </span>
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-cyan-700 dark:text-cyan-300">Browsing</p>
-                            <p className="text-xs text-muted-foreground">Agent is browsing the web for your task...</p>
-                          </div>
-                        </div>
-                      )}
-                      {message.steps.filter(s => s.type !== "browsing").map((step, index) => (
-                        <div
-                          key={step.id}
-                          className="flex items-center gap-2 text-sm text-muted-foreground"
-                        >
-                          {getStepIcon(step.type, index === (message.steps?.filter(s => s.type !== "browsing").length || 0) - 1)}
-                          <span>{step.description}</span>
-                        </div>
-                      ))}
+                  {message.role === "assistant" && (
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-blue-600">
+                      <Monitor className="h-4 w-4 text-white" />
                     </div>
                   )}
-
-                  {/* Message Content */}
-                  {message.content && (
-                    <div className={cn(
-                      "prose prose-sm dark:prose-invert max-w-none",
-                      message.status === "error" && "text-destructive"
-                    )}>
-                      <p className="whitespace-pre-wrap">{message.content}</p>
-                    </div>
-                  )}
-
-                  {/* Artifacts */}
-                  {message.artifacts && message.artifacts.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      {message.artifacts.map((artifact) => (
-                        <div
-                          key={artifact.id}
-                          className="flex items-center gap-3 rounded-lg border border-border bg-background p-3"
-                        >
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                            {getArtifactIcon(artifact.type)}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{artifact.title}</p>
-                            <p className="text-xs text-muted-foreground capitalize">{artifact.type}</p>
-                          </div>
-                          {artifact.url && (
-                            <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                              <a href={artifact.url} target="_blank" rel="noopener noreferrer">
-                                <ExternalLink className="h-4 w-4" />
-                              </a>
-                            </Button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Slides Viewer - Professional Presentation Style */}
-                  {message.slides && message.slides.length > 0 && (
-                    <div className="mt-4">
-                      {/* Main slide viewer */}
-                      <div className="rounded-xl border border-border bg-muted/30 p-4 shadow-lg">
-                        <div 
-                          className="relative aspect-video overflow-hidden rounded-lg shadow-xl"
-                          style={{ 
-                            backgroundColor: message.slides[currentSlideIndex]?.backgroundColor || "#1e293b",
-                            color: message.slides[currentSlideIndex]?.textColor || "#ffffff"
-                          }}
-                        >
-                          {/* Slide content */}
-                          {currentSlideIndex === 0 ? (
-                            // Title slide layout
-                            <div className="flex h-full flex-col items-center justify-center p-8">
-                              <h1 className="mb-4 text-center text-3xl font-bold leading-tight md:text-4xl">
-                                {message.slides[currentSlideIndex]?.title}
-                              </h1>
-                              <div 
-                                className="mb-6 h-1 w-24 rounded-full"
-                                style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
-                              />
-                              <p className="text-center text-lg opacity-80">
-                                {message.slides[currentSlideIndex]?.content.join(' | ')}
-                              </p>
+                  
+                  <div
+                    className={cn(
+                      "max-w-[80%] rounded-2xl px-4 py-3",
+                      message.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted"
+                    )}
+                  >
+                    {/* Processing Steps */}
+                    {message.role === "assistant" && message.steps && message.status !== "completed" && message.status !== "error" && (
+                      <div className="mb-3 space-y-2">
+                        {message.status === "browsing" && (
+                          <div className="flex items-center gap-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3">
+                            <div className="relative">
+                              <Monitor className="h-5 w-5 text-cyan-500" />
+                              <span className="absolute -right-1 -top-1 flex h-2 w-2">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75"></span>
+                                <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-500"></span>
+                              </span>
                             </div>
-                          ) : currentSlideIndex === message.slides.length - 1 ? (
-                            // Thank you slide layout
-                            <div className="flex h-full flex-col items-center justify-center p-8">
-                              <h1 className="mb-6 text-center text-4xl font-bold">
-                                {message.slides[currentSlideIndex]?.title}
-                              </h1>
-                              <div className="space-y-2 text-center text-lg opacity-80">
-                                {message.slides[currentSlideIndex]?.content.map((item, i) => (
-                                  <p key={i}>{item}</p>
-                                ))}
-                              </div>
+                            <div>
+                              <p className="text-sm font-medium text-cyan-700 dark:text-cyan-300">Browsing</p>
+                              <p className="text-xs text-muted-foreground">Agent is browsing the web for your task...</p>
                             </div>
+                          </div>
+                        )}
+                        {message.steps.filter(s => s.type !== "browsing").map((step, index) => (
+                          <div
+                            key={step.id}
+                            className="flex items-center gap-2 text-sm text-muted-foreground"
+                          >
+                            {getStepIcon(step.type, index === (message.steps?.filter(s => s.type !== "browsing").length || 0) - 1)}
+                            <span>{step.description}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Message Content */}
+                    {message.content && (
+                      <div className={cn(
+                        "prose prose-sm dark:prose-invert max-w-none",
+                        message.status === "error" && "text-destructive"
+                      )}>
+                        <p className="whitespace-pre-wrap">{message.content}</p>
+                      </div>
+                    )}
+
+                    {/* Work with me button */}
+                    {message.role === "assistant" && showWorkWithMeButton && message.id === messages[messages.length - 1]?.id && (
+                      <div className="mt-4">
+                        <Button
+                          onClick={handleWorkWithMe}
+                          disabled={isLoading || isBrowserLoading}
+                          className="gap-2 bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:from-cyan-600 hover:to-blue-700"
+                        >
+                          {isBrowserLoading ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Starting browser...
+                            </>
                           ) : (
-                            // Content slide layout
-                            <div className="flex h-full flex-col p-6 md:p-8">
-                              <h2 className="mb-2 text-2xl font-bold md:text-3xl">
-                                {message.slides[currentSlideIndex]?.title}
-                              </h2>
-                              <div 
-                                className="mb-6 h-1 w-16 rounded-full"
-                                style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
-                              />
-                              <ul className="flex-1 space-y-3">
-                                {message.slides[currentSlideIndex]?.content.map((item, i) => (
-                                  <li key={i} className="flex items-start gap-3 text-base md:text-lg">
-                                    <span 
-                                      className="mt-2 h-2 w-2 shrink-0 rounded-full"
-                                      style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
-                                    />
-                                    <span className="opacity-90">{item}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
+                            <>
+                              <Hand className="h-4 w-4" />
+                              Work with me
+                            </>
                           )}
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Artifacts */}
+                    {message.artifacts && message.artifacts.length > 0 && (
+                      <div className="mt-4 space-y-2">
+                        {message.artifacts.map((artifact) => (
+                          <div
+                            key={artifact.id}
+                            className="flex items-center gap-3 rounded-lg border border-border bg-background p-3"
+                          >
+                            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                              {getArtifactIcon(artifact.type)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium truncate">{artifact.title}</p>
+                              <p className="text-xs text-muted-foreground capitalize">{artifact.type}</p>
+                            </div>
+                            {artifact.url && (
+                              <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+                                <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+                                  <ExternalLink className="h-4 w-4" />
+                                </a>
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Slides Viewer */}
+                    {message.slides && message.slides.length > 0 && (
+                      <div className="mt-4">
+                        <div className="rounded-xl border border-border bg-muted/30 p-4 shadow-lg">
+                          <div 
+                            className="relative aspect-video overflow-hidden rounded-lg shadow-xl"
+                            style={{ 
+                              backgroundColor: message.slides[currentSlideIndex]?.backgroundColor || "#1e293b",
+                              color: message.slides[currentSlideIndex]?.textColor || "#ffffff"
+                            }}
+                          >
+                            {currentSlideIndex === 0 ? (
+                              <div className="flex h-full flex-col items-center justify-center p-8">
+                                <h1 className="mb-4 text-center text-3xl font-bold leading-tight md:text-4xl">
+                                  {message.slides[currentSlideIndex]?.title}
+                                </h1>
+                                <div 
+                                  className="mb-6 h-1 w-24 rounded-full"
+                                  style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
+                                />
+                                <p className="text-center text-lg opacity-80">
+                                  {message.slides[currentSlideIndex]?.content.join(' | ')}
+                                </p>
+                              </div>
+                            ) : currentSlideIndex === message.slides.length - 1 ? (
+                              <div className="flex h-full flex-col items-center justify-center p-8">
+                                <h1 className="mb-6 text-center text-4xl font-bold">
+                                  {message.slides[currentSlideIndex]?.title}
+                                </h1>
+                                <div className="space-y-2 text-center text-lg opacity-80">
+                                  {message.slides[currentSlideIndex]?.content.map((item, i) => (
+                                    <p key={i}>{item}</p>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex h-full flex-col p-6 md:p-8">
+                                <h2 className="mb-2 text-2xl font-bold md:text-3xl">
+                                  {message.slides[currentSlideIndex]?.title}
+                                </h2>
+                                <div 
+                                  className="mb-6 h-1 w-16 rounded-full"
+                                  style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
+                                />
+                                <ul className="flex-1 space-y-3">
+                                  {message.slides[currentSlideIndex]?.content.map((item, i) => (
+                                    <li key={i} className="flex items-start gap-3 text-base md:text-lg">
+                                      <span 
+                                        className="mt-2 h-2 w-2 shrink-0 rounded-full"
+                                        style={{ backgroundColor: slideDetails.style === 'minimal' ? '#0EA5E9' : '#3B82F6' }}
+                                      />
+                                      <span className="opacity-90">{item}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            
+                            <div className="absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1 text-xs font-medium backdrop-blur-sm">
+                              {currentSlideIndex + 1} / {message.slides.length}
+                            </div>
+                          </div>
                           
-                          {/* Slide number badge */}
-                          <div className="absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1 text-xs font-medium backdrop-blur-sm">
-                            {currentSlideIndex + 1} / {message.slides.length}
+                          <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+                            {message.slides.map((slide, idx) => (
+                              <button
+                                key={slide.id}
+                                onClick={() => setCurrentSlideIndex(idx)}
+                                className={cn(
+                                  "relative aspect-video w-20 shrink-0 overflow-hidden rounded-md border-2 transition-all hover:opacity-100",
+                                  currentSlideIndex === idx 
+                                    ? "border-primary opacity-100 ring-2 ring-primary/30" 
+                                    : "border-transparent opacity-60"
+                                )}
+                                style={{ backgroundColor: slide.backgroundColor }}
+                              >
+                                <div 
+                                  className="flex h-full flex-col items-center justify-center p-1"
+                                  style={{ color: slide.textColor }}
+                                >
+                                  <span className="truncate text-[6px] font-semibold">{slide.title}</span>
+                                </div>
+                                <span className="absolute bottom-0.5 right-0.5 text-[8px] opacity-60">{idx + 1}</span>
+                              </button>
+                            ))}
                           </div>
                         </div>
                         
-                        {/* Slide thumbnails */}
-                        <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
-                          {message.slides.map((slide, idx) => (
-                            <button
-                              key={slide.id}
-                              onClick={() => setCurrentSlideIndex(idx)}
-                              className={cn(
-                                "relative aspect-video w-20 shrink-0 overflow-hidden rounded-md border-2 transition-all hover:opacity-100",
-                                currentSlideIndex === idx 
-                                  ? "border-primary opacity-100 ring-2 ring-primary/30" 
-                                  : "border-transparent opacity-60"
-                              )}
-                              style={{ backgroundColor: slide.backgroundColor }}
+                        <div className="mt-4 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setCurrentSlideIndex(Math.max(0, currentSlideIndex - 1))}
+                              disabled={currentSlideIndex === 0}
+                              className="gap-1"
                             >
-                              <div 
-                                className="flex h-full flex-col items-center justify-center p-1"
-                                style={{ color: slide.textColor }}
-                              >
-                                <span className="truncate text-[6px] font-semibold">{slide.title}</span>
-                              </div>
-                              <span className="absolute bottom-0.5 right-0.5 text-[8px] opacity-60">{idx + 1}</span>
-                            </button>
-                          ))}
+                              <ChevronLeft className="h-4 w-4" />
+                              Previous
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setCurrentSlideIndex(Math.min(message.slides!.length - 1, currentSlideIndex + 1))}
+                              disabled={currentSlideIndex === message.slides.length - 1}
+                              className="gap-1"
+                            >
+                              Next
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setIsFullscreen(true)}
+                              className="gap-1.5"
+                            >
+                              <Play className="h-4 w-4" />
+                              Present
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={downloadSlides}
+                              className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+                            >
+                              <Download className="h-4 w-4" />
+                              Download PPTX
+                            </Button>
+                          </div>
                         </div>
                       </div>
-                      
-                      {/* Slide controls */}
-                      <div className="mt-4 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setCurrentSlideIndex(Math.max(0, currentSlideIndex - 1))}
-                            disabled={currentSlideIndex === 0}
-                            className="gap-1"
-                          >
-                            <ChevronLeft className="h-4 w-4" />
-                            Previous
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setCurrentSlideIndex(Math.min(message.slides!.length - 1, currentSlideIndex + 1))}
-                            disabled={currentSlideIndex === message.slides.length - 1}
-                            className="gap-1"
-                          >
-                            Next
-                            <ChevronRight className="h-4 w-4" />
-                          </Button>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setIsFullscreen(true)}
-                            className="gap-1.5"
-                          >
-                            <Play className="h-4 w-4" />
-                            Present
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={downloadSlides}
-                            className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
-                          >
-                            <Download className="h-4 w-4" />
-                            Download PPTX
-                          </Button>
-                        </div>
+                    )}
+
+                    {/* Actions for assistant messages */}
+                    {message.role === "assistant" && message.status === "completed" && !showWorkWithMeButton && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => handleCopy(message.content, message.id)}
+                        >
+                          {copiedId === message.id ? (
+                            <>
+                              <Check className="h-3 w-3" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => handleRetry(message.id)}
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Retry
+                        </Button>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Actions for assistant messages */}
-                  {message.role === "assistant" && message.status === "completed" && (
-                    <div className="mt-3 flex items-center gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={() => handleCopy(message.content, message.id)}
-                      >
-                        {copiedId === message.id ? (
-                          <>
-                            <Check className="h-3 w-3" />
-                            Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-3 w-3" />
-                            Copy
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={() => handleRetry(message.id)}
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                        Retry
-                      </Button>
-                    </div>
-                  )}
+                    {/* Error state */}
+                    {message.status === "error" && (
+                      <div className="mt-3">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 text-xs"
+                          onClick={() => handleRetry(message.id)}
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Try again
+                        </Button>
+                      </div>
+                    )}
+                  </div>
 
-                  {/* Error state */}
-                  {message.status === "error" && (
-                    <div className="mt-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5 text-xs"
-                        onClick={() => handleRetry(message.id)}
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                        Try again
-                      </Button>
+                  {message.role === "user" && (
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-500">
+                      <span className="text-sm font-medium text-white">U</span>
                     </div>
                   )}
                 </div>
-
-                {message.role === "user" && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-500">
-                    <span className="text-sm font-medium text-white">U</span>
-                  </div>
-                )}
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
           </div>
-        </div>
 
-        {/* Input Area */}
-        <div className="border-t border-border bg-background p-4">
-          <div className="mx-auto max-w-3xl">
-            <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-              <textarea
-                ref={textareaRef}
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Assign another task..."
-                className="min-h-[40px] w-full resize-none bg-transparent text-base outline-none placeholder:text-muted-foreground"
-                rows={1}
-                disabled={isLoading}
-              />
+          {/* Input Area */}
+          <div className="border-t border-border bg-background p-4">
+            <div className="mx-auto max-w-3xl">
+              <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+                <textarea
+                  ref={textareaRef}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Assign another task..."
+                  className="min-h-[40px] w-full resize-none bg-transparent text-base outline-none placeholder:text-muted-foreground"
+                  rows={1}
+                  disabled={isLoading}
+                />
 
-<div className="flex items-center justify-between pt-2">
+                <div className="flex items-center justify-between pt-2">
                   <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
-                  <Plus className="h-4 w-4" />
-                  </Button>
-                  
-                  {/* Turbo Mode Toggle */}
-                  <button
-                  onClick={() => setTurboMode(!turboMode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium transition-all ${
-                    turboMode 
-                      ? "border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/30" 
-                      : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                  title="Turbo Mode - Ultra-fast responses powered by Cerebras"
-                  >
-                  <Zap className={`h-3.5 w-3.5 ${turboMode ? "fill-yellow-500" : ""}`} />
-                  <span>Turbo</span>
-                  </button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    
+                    {/* Turbo Mode Toggle */}
+                    <button
+                      onClick={() => setTurboMode(!turboMode)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium transition-all ${
+                        turboMode 
+                          ? "border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/30" 
+                          : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                      title="Turbo Mode - Ultra-fast responses powered by Cerebras"
+                    >
+                      <Zap className={`h-3.5 w-3.5 ${turboMode ? "fill-yellow-500" : ""}`} />
+                      <span>Turbo</span>
+                    </button>
+
+                    {/* Browser Panel Toggle */}
+                    {browserSession && (
+                      <button
+                        onClick={() => setShowBrowserPanel(!showBrowserPanel)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium transition-all ${
+                          showBrowserPanel 
+                            ? "border-cyan-500 bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500/30" 
+                            : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                        }`}
+                        title="Toggle browser panel"
+                      >
+                        {showBrowserPanel ? (
+                          <PanelRightClose className="h-3.5 w-3.5" />
+                        ) : (
+                          <PanelRightOpen className="h-3.5 w-3.5" />
+                        )}
+                        <span>Browser</span>
+                      </button>
+                    )}
                   </div>
 
-                <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
-                    <Smile className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
-                    <Mic className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    className={cn(
-                      "h-10 w-10 rounded-full",
-                      inputValue.trim() && !isLoading
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground"
-                    )}
-                    disabled={!inputValue.trim() || isLoading}
-                    onClick={handleSubmit}
-                  >
-                    {isLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <ArrowUp className="h-4 w-4" />
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
+                      <Smile className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground">
+                      <Mic className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      className={cn(
+                        "h-10 w-10 rounded-full",
+                        inputValue.trim() && !isLoading
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground"
+                      )}
+                      disabled={!inputValue.trim() || isLoading}
+                      onClick={handleSubmit}
+                    >
+                      {isLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Browser Live View Panel */}
+        {showBrowserPanel && browserSession && (
+          <div className="flex w-1/2 flex-col border-l border-border bg-muted/30">
+            {/* Panel Header */}
+            <div className="flex items-center justify-between border-b border-border bg-background px-4 py-3">
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Monitor className="h-5 w-5 text-cyan-500" />
+                  <span className="absolute -right-1 -top-1 flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span>
+                  </span>
+                </div>
+                <span className="font-medium">Live Browser Session</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => window.open(browserSession.interactiveLiveViewUrl, '_blank')}
+                  className="gap-1.5 text-xs"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open in new tab
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={closeBrowserSession}
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Browser iframe */}
+            <div className="flex-1 overflow-hidden">
+              <iframe
+                src={browserSession.interactiveLiveViewUrl}
+                className="h-full w-full border-0"
+                title="Live Browser Session"
+                allow="clipboard-read; clipboard-write"
+              />
+            </div>
+
+            {/* Results section */}
+            {browserResults.length > 0 && (
+              <div className="border-t border-border bg-background p-4">
+                <h4 className="mb-2 text-sm font-medium">Results</h4>
+                <div className="max-h-40 overflow-auto rounded-lg bg-muted p-3">
+                  {browserResults.map((result, index) => (
+                    <pre key={index} className="text-xs text-muted-foreground whitespace-pre-wrap">
+                      {result}
+                    </pre>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     )
   }
@@ -1464,12 +1432,12 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
           <div className="mt-2 flex items-center justify-between rounded-lg border border-border bg-card px-4 py-2">
             <div className="flex items-center gap-2">
               <ConnectIcon />
-              <span className="text-sm text-muted-foreground">Powered by Manus AI Agent</span>
+              <span className="text-sm text-muted-foreground">Powered by Firecrawl Browser Agent</span>
             </div>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1">
-                <ToolIcon type="chatgpt" />
-                <ToolIcon type="gmail" />
+                <ToolIcon type="browser" />
+                <ToolIcon type="playwright" />
                 <ToolIcon type="sheets" />
                 <ToolIcon type="slack" />
                 <ToolIcon type="github" />
@@ -1632,7 +1600,7 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
         </div>
       )}
 
-{/* Fullscreen Presentation Mode */}
+      {/* Fullscreen Presentation Mode */}
       {isFullscreen && generatedSlides.length > 0 && (
         <div
           className="fixed inset-0 z-50 flex flex-col cursor-pointer select-none"
@@ -1656,9 +1624,7 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
           }}
           tabIndex={0}
         >
-          {/* Slide content */}
           {currentSlideIndex === 0 ? (
-            // Title slide - fullscreen
             <div className="flex flex-1 flex-col items-center justify-center p-12">
               <h1 className="mb-6 max-w-4xl text-center text-5xl font-bold leading-tight md:text-6xl lg:text-7xl">
                 {generatedSlides[currentSlideIndex]?.title}
@@ -1672,7 +1638,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
               </p>
             </div>
           ) : currentSlideIndex === generatedSlides.length - 1 ? (
-            // Thank you slide - fullscreen
             <div className="flex flex-1 flex-col items-center justify-center p-12">
               <h1 className="mb-8 text-center text-5xl font-bold md:text-6xl lg:text-7xl">
                 {generatedSlides[currentSlideIndex]?.title}
@@ -1684,7 +1649,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
               </div>
             </div>
           ) : (
-            // Content slide - fullscreen
             <div className="flex flex-1 flex-col p-12 md:p-16 lg:p-20">
               <h1 className="mb-4 text-4xl font-bold md:text-5xl">
                 {generatedSlides[currentSlideIndex]?.title}
@@ -1707,7 +1671,6 @@ setMessages(prev => [...prev, userMessage, assistantMessage])
             </div>
           )}
           
-          {/* Fullscreen controls bar */}
           <div className="flex items-center justify-between bg-black/30 px-6 py-4 backdrop-blur-sm">
             <div className="flex items-center gap-4">
               <span className="rounded-full bg-white/10 px-4 py-1.5 text-sm font-medium">
@@ -1796,17 +1759,15 @@ function ConnectIcon() {
 
 function ToolIcon({ type }: { type: string }) {
   const icons: Record<string, React.ReactNode> = {
-    chatgpt: (
-      <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#10a37f]">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
-          <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.0993 3.8558L12.6 8.3829l2.02-1.1638a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.1408 1.6465 4.4708 4.4708 0 0 1 .4246 3.0137zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/>
-        </svg>
+    browser: (
+      <div className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-blue-600">
+        <Monitor className="h-3 w-3 text-white" />
       </div>
     ),
-    gmail: (
-      <div className="flex h-5 w-5 items-center justify-center rounded text-red-500">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z"/>
+    playwright: (
+      <div className="flex h-5 w-5 items-center justify-center rounded bg-green-600">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
         </svg>
       </div>
     ),
