@@ -31,6 +31,7 @@ import { MarkdownContent } from "@/components/markdown-content"
 import { ChatActionButtons, type ActionType } from "@/components/chat-action-buttons"
 import { DocViewer, DocWizard, type DocData } from "@/components/doc-viewer"
 import { SlidesViewer, SlidesWizard, type Slide, type SlidesData } from "@/components/slides-viewer"
+import { BrowserLiveView } from "@/components/browser-live-view"
 
 interface Message {
   id: string
@@ -109,6 +110,14 @@ export default function DashboardPage() {
   const [isGeneratingSlides, setIsGeneratingSlides] = useState(false)
   const [generatedDoc, setGeneratedDoc] = useState<DocData | null>(null)
   const [generatedSlides, setGeneratedSlides] = useState<SlidesData | null>(null)
+  // Browser session state for Firecrawl
+  const [browserSessionId, setBrowserSessionId] = useState<string | null>(null)
+  const [browserLiveViewUrl, setBrowserLiveViewUrl] = useState<string | null>(null)
+  const [browserInteractiveUrl, setBrowserInteractiveUrl] = useState<string | null>(null)
+  const [isBrowserLoading, setIsBrowserLoading] = useState(false)
+  const [browserCurrentUrl, setBrowserCurrentUrl] = useState<string>("")
+  const [showBrowserPanel, setShowBrowserPanel] = useState(false)
+  const [activeTab, setActiveTab] = useState<"chat" | "agent">("chat")
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
@@ -134,6 +143,86 @@ export default function DashboardPage() {
     scrollToBottom()
   }, [messages])
 
+  // Browser session functions for Firecrawl
+  const launchBrowserSession = async () => {
+    setIsBrowserLoading(true)
+    setShowBrowserPanel(true)
+    setActiveTab("agent")
+    
+    try {
+      const response = await fetch("/api/firecrawl-browser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "launch" }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success) {
+        setBrowserSessionId(data.sessionId)
+        setBrowserLiveViewUrl(data.liveViewUrl)
+        setBrowserInteractiveUrl(data.interactiveLiveViewUrl)
+      } else {
+        console.error("Failed to launch browser:", data.error)
+      }
+    } catch (error) {
+      console.error("Browser launch error:", error)
+    } finally {
+      setIsBrowserLoading(false)
+    }
+  }
+
+  const navigateBrowser = async (url: string) => {
+    if (!browserSessionId) {
+      await launchBrowserSession()
+      return
+    }
+    
+    setIsBrowserLoading(true)
+    setBrowserCurrentUrl(url)
+    
+    try {
+      const response = await fetch("/api/firecrawl-browser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          action: "navigate", 
+          sessionId: browserSessionId,
+          url 
+        }),
+      })
+      
+      const data = await response.json()
+      if (!data.success) {
+        console.error("Navigation failed:", data.error)
+      }
+    } catch (error) {
+      console.error("Navigation error:", error)
+    } finally {
+      setIsBrowserLoading(false)
+    }
+  }
+
+  const closeBrowserSession = async () => {
+    if (browserSessionId) {
+      try {
+        await fetch("/api/firecrawl-browser", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "close", sessionId: browserSessionId }),
+        })
+      } catch (error) {
+        console.error("Error closing browser:", error)
+      }
+    }
+    
+    setBrowserSessionId(null)
+    setBrowserLiveViewUrl(null)
+    setBrowserInteractiveUrl(null)
+    setBrowserCurrentUrl("")
+    setShowBrowserPanel(false)
+  }
+
   const handleSubmit = async () => {
     if (!inputValue.trim() || isLoading) return
 
@@ -150,6 +239,27 @@ export default function DashboardPage() {
     )
     // Only use Manus if mode is selected OR keyword is found
     const shouldUseManus = searchMode !== "none" || hasManusKeyword
+
+    // Check if user wants to browse - launch Firecrawl browser
+    const browseKeywords = ["browse", "go to", "open website", "visit", "navigate to"]
+    const hasBrowseKeyword = browseKeywords.some(keyword => 
+      inputValue.toLowerCase().includes(keyword)
+    )
+    
+    // Extract URL from message if browsing
+    const urlMatch = inputValue.match(/https?:\/\/[^\s]+/i) || 
+                     inputValue.match(/(?:browse|go to|visit|open|navigate to)\s+([^\s]+\.[^\s]+)/i)
+    
+    if (hasBrowseKeyword && urlMatch) {
+      const url = urlMatch[0].startsWith("http") ? urlMatch[0] : `https://${urlMatch[1]}`
+      if (!browserSessionId) {
+        await launchBrowserSession()
+      }
+      navigateBrowser(url)
+    } else if (hasBrowseKeyword && !browserSessionId) {
+      // Just launch browser if browse keyword but no URL
+      launchBrowserSession()
+    }
     
     // Store current mode for status messages (don't reset it - keep for subsequent messages)
     const currentMode = searchMode
@@ -938,9 +1048,58 @@ export default function DashboardPage() {
   if (messages.length > 0) {
     return (
       <>
-      <div className="flex h-full flex-col">
-        {/* Messages Area */}
-        <div className="flex-1 overflow-auto px-4 py-6">
+      <div className="flex h-full">
+        {/* Main Chat/Agent Area */}
+        <div className={cn(
+          "flex flex-col transition-all duration-300",
+          showBrowserPanel ? "flex-1" : "flex-1"
+        )}>
+          {/* Tab Switcher */}
+          <div className="flex items-center border-b border-border px-4 py-2 gap-2">
+            <button
+              onClick={() => setActiveTab("chat")}
+              className={cn(
+                "px-4 py-1.5 text-sm font-medium rounded-full transition-colors",
+                activeTab === "chat" 
+                  ? "bg-primary text-primary-foreground" 
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab("agent")
+                if (!browserSessionId && !isBrowserLoading) {
+                  launchBrowserSession()
+                }
+              }}
+              className={cn(
+                "px-4 py-1.5 text-sm font-medium rounded-full transition-colors flex items-center gap-2",
+                activeTab === "agent" 
+                  ? "bg-primary text-primary-foreground" 
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              <Globe className="h-3.5 w-3.5" />
+              Agent
+              {browserSessionId && (
+                <span className="w-2 h-2 rounded-full bg-green-500" />
+              )}
+            </button>
+            {browserSessionId && (
+              <button
+                onClick={closeBrowserSession}
+                className="ml-auto text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+              >
+                <X className="h-3 w-3" />
+                Close Session
+              </button>
+            )}
+          </div>
+
+          {/* Messages Area */}
+          <div className="flex-1 overflow-auto px-4 py-6">
           <div className="mx-auto max-w-3xl space-y-6">
             {messages.map((message) => (
               <div
@@ -1228,6 +1387,24 @@ export default function DashboardPage() {
                           <span>Turbo mode</span>
                           {turboMode && <Check className="h-3 w-3 ml-auto text-yellow-500" />}
                         </button>
+                        
+                        <div className="border-t border-border my-1" />
+                        
+                        <button 
+                          className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted transition-colors text-left"
+                          onClick={() => {
+                            setPlusMenuOpen(false)
+                            setActiveTab("agent")
+                            setShowBrowserPanel(true)
+                            if (!browserSessionId && !isBrowserLoading) {
+                              launchBrowserSession()
+                            }
+                          }}
+                        >
+                          <Monitor className="h-4 w-4" />
+                          <span>Browse web</span>
+                          {browserSessionId && <span className="w-2 h-2 rounded-full bg-green-500 ml-auto" />}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1272,6 +1449,21 @@ export default function DashboardPage() {
                   {searchMode === "web" && <><Globe className="h-3.5 w-3.5" /><span>Web search</span></>}
                   {searchMode === "deep" && <><Sparkles className="h-3.5 w-3.5" /><span>Deep research</span></>}
                   {searchMode === "think" && <><Lightbulb className="h-3.5 w-3.5" /><span>Think longer</span></>}
+                  </div>
+                  )}
+
+                  {/* Browser session indicator */}
+                  {browserSessionId && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-green-500 bg-green-500/20 text-green-600 dark:text-green-400 text-sm font-medium transition-colors">
+                  <button
+                  onClick={closeBrowserSession}
+                  className="flex items-center justify-center hover:bg-green-500/30 rounded-full p-0.5 transition-colors"
+                  aria-label="Close browser session"
+                  >
+                  <X className="h-3.5 w-3.5" />
+                  </button>
+                  <Monitor className="h-3.5 w-3.5" />
+                  <span>Browsing</span>
                   </div>
                   )}
                   </div>
@@ -1384,6 +1576,22 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Browser Live View Panel - Right Side */}
+        {showBrowserPanel && activeTab === "agent" && (
+          <div className="w-[500px] border-l border-border h-full">
+            <BrowserLiveView
+              sessionId={browserSessionId}
+              liveViewUrl={browserLiveViewUrl}
+              interactiveLiveViewUrl={browserInteractiveUrl}
+              isLoading={isBrowserLoading}
+              currentUrl={browserCurrentUrl}
+              onClose={closeBrowserSession}
+              onNavigate={navigateBrowser}
+            />
+          </div>
+        )}
+      </div>
+
       {/* Overlay when panel is open */}
       {sourcePanelOpen && (
         <div 
@@ -1491,6 +1699,24 @@ export default function DashboardPage() {
                       <Lightbulb className="h-4 w-4" />
                       <span>Think longer</span>
                       {searchMode === "think" && <Check className="h-3 w-3 ml-auto text-primary" />}
+                    </button>
+                    
+                    <div className="border-t border-border my-1" />
+                    
+                    <button 
+                      className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted transition-colors text-left"
+                      onClick={() => {
+                        setPlusMenuOpen(false)
+                        setActiveTab("agent")
+                        setShowBrowserPanel(true)
+                        if (!browserSessionId && !isBrowserLoading) {
+                          launchBrowserSession()
+                        }
+                      }}
+                    >
+                      <Monitor className="h-4 w-4" />
+                      <span>Browse web</span>
+                      {browserSessionId && <span className="w-2 h-2 rounded-full bg-green-500 ml-auto" />}
                     </button>
                   </div>
                 )}
