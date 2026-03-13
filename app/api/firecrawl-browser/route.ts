@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 
-const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || "fc-21c577cb2e1a48d1a850e2850aceb4b4"
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY
 const FIRECRAWL_API_URL = "https://api.firecrawl.dev/v2/browser"
 
 export async function POST(request: NextRequest) {
+  if (!FIRECRAWL_API_KEY) {
+    return NextResponse.json(
+      { error: "FIRECRAWL_API_KEY is not configured" },
+      { status: 500 }
+    )
+  }
+
   try {
     const body = await request.json()
     const { action, sessionId, code, language, url } = body
@@ -151,6 +158,65 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         result: data.result,
+      })
+    }
+
+    // Scrape page content
+    if (action === "scrape") {
+      if (!sessionId) {
+        return NextResponse.json(
+          { error: "Session ID is required" },
+          { status: 400 }
+        )
+      }
+
+      const response = await fetch(`${FIRECRAWL_API_URL}/${sessionId}/execute`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code: `
+            const title = await page.title();
+            const content = await page.evaluate(() => {
+              // Get main content, removing scripts, styles, and navigation
+              const body = document.body.cloneNode(true);
+              body.querySelectorAll('script, style, nav, header, footer, aside').forEach(el => el.remove());
+              return body.innerText.replace(/\\s+/g, ' ').trim().substring(0, 5000);
+            });
+            const url = page.url();
+            console.log(JSON.stringify({ title, content, url }));
+          `,
+          language: "node",
+        }),
+      })
+
+      const data = await response.json()
+      
+      if (!response.ok) {
+        return NextResponse.json(
+          { error: data.error || "Failed to scrape page" },
+          { status: response.status }
+        )
+      }
+
+      // Parse the scraped content
+      let scrapedData = { title: "", content: "", url: "" }
+      try {
+        if (data.result?.logs?.[0]) {
+          scrapedData = JSON.parse(data.result.logs[0])
+        }
+      } catch (e) {
+        // If parsing fails, use raw content
+        scrapedData.content = data.result?.logs?.join(" ") || ""
+      }
+
+      return NextResponse.json({
+        success: true,
+        title: scrapedData.title,
+        content: scrapedData.content,
+        url: scrapedData.url,
       })
     }
 

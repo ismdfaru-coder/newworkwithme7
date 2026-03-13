@@ -229,36 +229,59 @@ export default function DashboardPage() {
     // Check if this is a new chat (no existing messages)
     const isNewChat = messages.length === 0
 
+    // AGENT TAB: Use only Firecrawl - no Manus API
+    if (activeTab === "agent") {
+      // Launch browser session if not already active
+      if (!browserSessionId && !isBrowserLoading) {
+        await launchBrowserSession()
+      }
+      
+      // Extract URL from message if present
+      const urlMatch = inputValue.match(/https?:\/\/[^\s]+/i) || 
+                       inputValue.match(/(?:browse|go to|visit|open|navigate to|search|find)\s+([^\s]+\.[^\s]+)/i)
+      
+      if (urlMatch) {
+        const url = urlMatch[0].startsWith("http") ? urlMatch[0] : `https://${urlMatch[1]}`
+        navigateBrowser(url)
+      }
+      
+      // For Agent tab, we'll use a simple response indicating the browser action
+      // No Manus API call - just Firecrawl browser
+    }
+
     // Determine if we should use Manus API based on:
     // 1. Search mode selected (web, deep, think)
     // 2. Keywords in the message
     // Otherwise use Keyplex (faster)
-    const manusKeywords = ["deep research", "web research", "browse", "search the web", "look up", "find online", "search online"]
+    // NOTE: Skip Manus entirely in Agent tab
+    const manusKeywords = ["deep research", "web research", "search the web", "look up", "find online", "search online"]
     const hasManusKeyword = manusKeywords.some(keyword => 
       inputValue.toLowerCase().includes(keyword)
     )
-    // Only use Manus if mode is selected OR keyword is found
-    const shouldUseManus = searchMode !== "none" || hasManusKeyword
+    // Only use Manus if mode is selected OR keyword is found, AND NOT in agent tab
+    const shouldUseManus = activeTab !== "agent" && (searchMode !== "none" || hasManusKeyword)
 
-    // Check if user wants to browse - launch Firecrawl browser
-    const browseKeywords = ["browse", "go to", "open website", "visit", "navigate to"]
-    const hasBrowseKeyword = browseKeywords.some(keyword => 
-      inputValue.toLowerCase().includes(keyword)
-    )
-    
-    // Extract URL from message if browsing
-    const urlMatch = inputValue.match(/https?:\/\/[^\s]+/i) || 
-                     inputValue.match(/(?:browse|go to|visit|open|navigate to)\s+([^\s]+\.[^\s]+)/i)
-    
-    if (hasBrowseKeyword && urlMatch) {
-      const url = urlMatch[0].startsWith("http") ? urlMatch[0] : `https://${urlMatch[1]}`
-      if (!browserSessionId) {
-        await launchBrowserSession()
+    // Check if user wants to browse - launch Firecrawl browser (only in chat tab)
+    if (activeTab === "chat") {
+      const browseKeywords = ["browse", "go to", "open website", "visit", "navigate to"]
+      const hasBrowseKeyword = browseKeywords.some(keyword => 
+        inputValue.toLowerCase().includes(keyword)
+      )
+      
+      // Extract URL from message if browsing
+      const urlMatch = inputValue.match(/https?:\/\/[^\s]+/i) || 
+                       inputValue.match(/(?:browse|go to|visit|open|navigate to)\s+([^\s]+\.[^\s]+)/i)
+      
+      if (hasBrowseKeyword && urlMatch) {
+        const url = urlMatch[0].startsWith("http") ? urlMatch[0] : `https://${urlMatch[1]}`
+        if (!browserSessionId) {
+          await launchBrowserSession()
+        }
+        navigateBrowser(url)
+      } else if (hasBrowseKeyword && !browserSessionId) {
+        // Just launch browser if browse keyword but no URL
+        launchBrowserSession()
       }
-      navigateBrowser(url)
-    } else if (hasBrowseKeyword && !browserSessionId) {
-      // Just launch browser if browse keyword but no URL
-      launchBrowserSession()
     }
     
     // Store current mode for status messages (don't reset it - keep for subsequent messages)
@@ -292,8 +315,78 @@ export default function DashboardPage() {
     setIsLoading(true)
 
     try {
-      // TURBO MODE: Use Cerebras for ultra-fast inference
-      if (turboMode) {
+      // AGENT TAB: Use only Firecrawl - no other APIs
+      if (activeTab === "agent") {
+        setMessages(prev => prev.map(m => 
+          m.id === assistantMessage.id 
+            ? { 
+                ...m, 
+                status: "processing",
+                steps: [
+                  ...(m.steps || []),
+                  {
+                    id: crypto.randomUUID(),
+                    type: "searching",
+                    description: "Browsing the web for you...",
+                    timestamp: new Date(),
+                  }
+                ]
+              }
+            : m
+        ))
+
+        // Use Firecrawl to scrape content if we have a session
+        let scrapedContent = ""
+        if (browserSessionId && browserCurrentUrl) {
+          try {
+            const scrapeResponse = await fetch("/api/firecrawl-browser", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                action: "scrape", 
+                sessionId: browserSessionId,
+                url: browserCurrentUrl
+              }),
+            })
+            const scrapeData = await scrapeResponse.json()
+            if (scrapeData.success && scrapeData.content) {
+              scrapedContent = scrapeData.content.substring(0, 2000) // Limit content
+            }
+          } catch (e) {
+            console.log("[v0] Scrape error:", e)
+          }
+        }
+
+        // Generate a helpful response based on the user's request
+        const agentResponse = scrapedContent 
+          ? `I'm browsing the web for you. Here's what I found:\n\n${scrapedContent}\n\nI can continue searching or navigate to specific sites. Just let me know what you'd like me to do next.`
+          : `I'm ready to browse the web for you. I've launched a browser session. Tell me what you'd like me to search for or which website to visit, and I'll get the information you need.`
+
+        setMessages(prev => prev.map(m => 
+          m.id === assistantMessage.id 
+            ? { 
+                ...m, 
+                content: agentResponse,
+                status: "complete",
+                steps: [
+                  ...(m.steps || []),
+                  {
+                    id: crypto.randomUUID(),
+                    type: "complete",
+                    description: "Browsing complete",
+                    timestamp: new Date(),
+                  }
+                ]
+              }
+            : m
+        ))
+        
+        setIsLoading(false)
+        return
+      }
+
+      // TURBO MODE: Use Cerebras for ultra-fast inference (only in chat tab)
+      if (turboMode && activeTab === "chat") {
         setMessages(prev => prev.map(m => 
           m.id === assistantMessage.id 
             ? { 
