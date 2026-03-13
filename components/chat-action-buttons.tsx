@@ -8,10 +8,9 @@ import {
   Presentation,
   Table,
   Search,
-  GitBranch,
 } from "lucide-react"
 
-export type ActionType = "websites" | "docs" | "slides" | "sheets" | "deep-research" | "agent-swarm"
+export type ActionType = "websites" | "docs" | "slides" | "sheets" | "deep-research"
 
 interface ChatActionButtonsProps {
   onAction: (action: ActionType) => void
@@ -25,7 +24,6 @@ const actions = [
   { type: "slides" as ActionType, label: "Slides", icon: Presentation },
   { type: "sheets" as ActionType, label: "Sheets", icon: Table },
   { type: "deep-research" as ActionType, label: "Deep Research", icon: Search },
-  { type: "agent-swarm" as ActionType, label: "Agent Swarm", icon: GitBranch, beta: true },
 ]
 
 export function ChatActionButtons({ onAction, activeAction, className = "" }: ChatActionButtonsProps) {

@@ -1232,6 +1232,33 @@ export default function DashboardPage() {
                     )}
                   </div>
 
+                  {/* Turbo Mode Toggle - shown when not active */}
+                  {!turboMode && (
+                  <button
+                  onClick={() => setTurboMode(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground text-sm font-medium transition-all"
+                  title="Turbo Mode - Ultra-fast responses"
+                  >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Turbo</span>
+                  </button>
+                  )}
+
+                  {/* Turbo Mode Active Indicator - with close button like Deep Research */}
+                  {turboMode && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-sm font-medium transition-colors">
+                  <button
+                  onClick={() => setTurboMode(false)}
+                  className="flex items-center justify-center hover:bg-yellow-500/30 rounded-full p-0.5 transition-colors"
+                  aria-label="Disable Turbo mode"
+                  >
+                  <X className="h-3.5 w-3.5" />
+                  </button>
+                  <Zap className="h-3.5 w-3.5 fill-yellow-500" />
+                  <span>Turbo</span>
+                  </div>
+                  )}
+
                   {/* Show active mode indicator - persists until user closes it */}
                   {searchMode !== "none" && (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-muted/50 text-foreground text-sm font-medium hover:bg-muted transition-colors">
@@ -1469,19 +1496,32 @@ export default function DashboardPage() {
                 )}
               </div>
               
-{/* Turbo Mode Toggle */}
+{/* Turbo Mode Toggle - shown when not active */}
+                  {!turboMode && (
                   <button
-                  onClick={() => setTurboMode(!turboMode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium transition-all ${
-                    turboMode 
-                      ? "border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/30" 
-                      : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                  title="Turbo Mode - Ultra-fast responses powered by Cerebras"
+                  onClick={() => setTurboMode(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground text-sm font-medium transition-all"
+                  title="Turbo Mode - Ultra-fast responses"
                   >
-                  <Zap className={`h-3.5 w-3.5 ${turboMode ? "fill-yellow-500" : ""}`} />
+                  <Zap className="h-3.5 w-3.5" />
                   <span>Turbo</span>
                   </button>
+                  )}
+
+                  {/* Turbo Mode Active Indicator - with close button like Deep Research */}
+                  {turboMode && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-sm font-medium transition-colors">
+                  <button
+                  onClick={() => setTurboMode(false)}
+                  className="flex items-center justify-center hover:bg-yellow-500/30 rounded-full p-0.5 transition-colors"
+                  aria-label="Disable Turbo mode"
+                  >
+                  <X className="h-3.5 w-3.5" />
+                  </button>
+                  <Zap className="h-3.5 w-3.5 fill-yellow-500" />
+                  <span>Turbo</span>
+                  </div>
+                  )}
 
                   {/* Show active mode indicator - persists until user closes it */}
                   {searchMode !== "none" && (
