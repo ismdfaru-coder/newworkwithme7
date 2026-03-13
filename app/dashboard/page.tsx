@@ -1098,7 +1098,8 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Messages Area */}
+          {/* Messages Area - Chat Tab */}
+          {activeTab === "chat" && (
           <div className="flex-1 overflow-auto px-4 py-6">
           <div className="mx-auto max-w-3xl space-y-6">
             {messages.map((message) => (
@@ -1278,6 +1279,108 @@ export default function DashboardPage() {
             <div ref={messagesEndRef} />
           </div>
         </div>
+          )}
+
+          {/* Agent Tab Content */}
+          {activeTab === "agent" && (
+          <div className="flex-1 overflow-auto px-4 py-6">
+            <div className="mx-auto max-w-3xl">
+              {/* Workwithme Title */}
+              <div className="text-center mb-8">
+                <h2 className="text-3xl font-serif mb-2">Workwithme</h2>
+                <p className="text-muted-foreground">Let me browse the web and complete tasks for you</p>
+              </div>
+
+              {/* Suggestion Tags */}
+              <div className="flex flex-wrap gap-2 justify-center mb-8">
+                <button
+                  onClick={() => {
+                    setInputValue("Find the cheapest flights from Paris to London between May 20th to June 1st 2026")
+                    if (!browserSessionId && !isBrowserLoading) {
+                      launchBrowserSession()
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full border border-border bg-card hover:bg-muted text-sm transition-colors"
+                >
+                  Find cheapest flights Paris to London (May 20 - Jun 1, 2026)
+                </button>
+                <button
+                  onClick={() => {
+                    setInputValue("Search for the best rated hotels in Tokyo under $150 per night")
+                    if (!browserSessionId && !isBrowserLoading) {
+                      launchBrowserSession()
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full border border-border bg-card hover:bg-muted text-sm transition-colors"
+                >
+                  Best hotels in Tokyo under $150/night
+                </button>
+                <button
+                  onClick={() => {
+                    setInputValue("Compare prices for iPhone 16 Pro across major retailers")
+                    if (!browserSessionId && !isBrowserLoading) {
+                      launchBrowserSession()
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full border border-border bg-card hover:bg-muted text-sm transition-colors"
+                >
+                  Compare iPhone 16 Pro prices
+                </button>
+                <button
+                  onClick={() => {
+                    setInputValue("Find upcoming tech conferences in San Francisco 2026")
+                    if (!browserSessionId && !isBrowserLoading) {
+                      launchBrowserSession()
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full border border-border bg-card hover:bg-muted text-sm transition-colors"
+                >
+                  Upcoming tech conferences in SF 2026
+                </button>
+              </div>
+
+              {/* Agent Messages */}
+              <div className="space-y-6">
+                {messages.filter(m => m.role === "assistant" || m.role === "user").map((message) => (
+                  <div
+                    key={message.id}
+                    className={cn(
+                      "flex gap-4",
+                      message.role === "user" ? "justify-end" : "justify-start"
+                    )}
+                  >
+                    {message.role === "assistant" && (
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-green-500 to-emerald-500">
+                        <Monitor className="h-4 w-4 text-white" />
+                      </div>
+                    )}
+                    
+                    <div
+                      className={cn(
+                        "max-w-[80%] rounded-2xl px-4 py-3",
+                        message.role === "user"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted"
+                      )}
+                    >
+                      {message.content && (
+                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {message.role === "user" && (
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-500">
+                        <span className="text-sm font-medium text-white">U</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          )}
 
         {/* Input Area */}
         <div className="border-t border-border bg-background p-4">
@@ -1288,7 +1391,7 @@ export default function DashboardPage() {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask a follow-up question..."
+                placeholder={activeTab === "agent" ? "Tell me what to browse or search for..." : "Ask a follow-up question..."}
                 className="min-h-[40px] w-full resize-none bg-transparent text-base outline-none placeholder:text-muted-foreground"
                 rows={1}
                 disabled={isLoading}
@@ -1409,8 +1512,8 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  {/* Turbo Mode Toggle - shown when not active */}
-                  {!turboMode && (
+                  {/* Turbo Mode Toggle - shown when not active and NOT in Agent tab */}
+                  {!turboMode && activeTab === "chat" && (
                   <button
                   onClick={() => setTurboMode(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground text-sm font-medium transition-all"
@@ -1421,8 +1524,8 @@ export default function DashboardPage() {
                   </button>
                   )}
 
-                  {/* Turbo Mode Active Indicator - with close button like Deep Research */}
-                  {turboMode && (
+                  {/* Turbo Mode Active Indicator - with close button like Deep Research - only in Chat tab */}
+                  {turboMode && activeTab === "chat" && (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-yellow-500 bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-sm font-medium transition-colors">
                   <button
                   onClick={() => setTurboMode(false)}
@@ -1436,8 +1539,16 @@ export default function DashboardPage() {
                   </div>
                   )}
 
-                  {/* Show active mode indicator - persists until user closes it */}
-                  {searchMode !== "none" && (
+                  {/* Workwithme badge in Agent tab */}
+                  {activeTab === "agent" && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-green-500 bg-green-500/10 text-green-600 dark:text-green-400 text-sm font-medium">
+                  <Monitor className="h-3.5 w-3.5" />
+                  <span>Workwithme</span>
+                  </div>
+                  )}
+
+                  {/* Show active mode indicator - persists until user closes it - only in Chat tab */}
+                  {searchMode !== "none" && activeTab === "chat" && (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-muted/50 text-foreground text-sm font-medium hover:bg-muted transition-colors">
                   <button
                   onClick={() => setSearchMode("none")}
@@ -1452,8 +1563,8 @@ export default function DashboardPage() {
                   </div>
                   )}
 
-                  {/* Browser session indicator */}
-                  {browserSessionId && (
+                  {/* Browser session indicator - only show in chat tab when browsing is active */}
+                  {browserSessionId && activeTab === "chat" && (
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-green-500 bg-green-500/20 text-green-600 dark:text-green-400 text-sm font-medium transition-colors">
                   <button
                   onClick={closeBrowserSession}
