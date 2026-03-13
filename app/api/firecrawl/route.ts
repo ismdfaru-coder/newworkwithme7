@@ -41,7 +41,8 @@ export async function POST(request: NextRequest) {
 
     // Execute code in an existing session
     if (action === "execute" && sessionId) {
-      console.log("[v0] Executing code in session:", sessionId)
+      console.log("[v0] Executing code in session:", sessionId, "language:", language)
+      console.log("[v0] Code to execute:", code)
       
       const response = await fetch(`${FIRECRAWL_API_URL}/${sessionId}/execute`, {
         method: "POST",
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify({
           code,
-          language,
+          language, // "bash" for agent-browser commands, "node" or "python" for Playwright
         }),
       })
 

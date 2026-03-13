@@ -174,11 +174,12 @@ export default function AgentsPage() {
     }
   }, [])
 
-  // Execute code in browser session
-  const executeBrowserCode = useCallback(async (code: string, language: string = "node") => {
+  // Execute code in browser session using agent-browser (bash) commands
+  const executeBrowserCode = useCallback(async (code: string, language: string = "bash") => {
     if (!browserSession?.id) return null
 
     try {
+      console.log("[v0] Executing browser command:", code, "language:", language)
       const response = await fetch("/api/firecrawl", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -191,6 +192,7 @@ export default function AgentsPage() {
       })
 
       const data: FirecrawlResponse = await response.json()
+      console.log("[v0] Browser execution result:", data)
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to execute code")
@@ -240,16 +242,10 @@ export default function AgentsPage() {
       return
     }
 
-    // Add user message
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: currentTask,
-      timestamp: new Date(),
-    }
+    const assistantMessageId = crypto.randomUUID()
 
     const assistantMessage: Message = {
-      id: crypto.randomUUID(),
+      id: assistantMessageId,
       role: "assistant",
       content: "",
       timestamp: new Date(),
@@ -258,51 +254,76 @@ export default function AgentsPage() {
         {
           id: crypto.randomUUID(),
           type: "browsing",
-          description: "Starting browser session...",
+          description: "Browser session started. Executing task...",
           timestamp: new Date(),
         }
       ]
     }
 
-    setMessages(prev => [...prev, userMessage, assistantMessage])
-
-    // Generate Playwright code based on the task
-    const playwrightCode = generatePlaywrightCode(currentTask)
-
-    // Update status
     setMessages(prev => prev.map(m => 
-      m.id === assistantMessage.id 
-        ? { 
-            ...m, 
-            steps: [
-              ...(m.steps || []),
-              {
-                id: crypto.randomUUID(),
-                type: "browsing",
-                description: "Executing task in browser...",
-                timestamp: new Date(),
-              }
-            ]
-          }
+      m.role === "assistant" && m.content.includes("Work with me")
+        ? assistantMessage
         : m
     ))
 
-    // Execute the task
-    const result = await executeBrowserCode(playwrightCode)
+    // Generate agent-browser commands based on the task
+    const commands = generateAgentBrowserCommands(currentTask)
+    console.log("[v0] Generated commands:", commands)
+    
+    let allResults: string[] = []
+    
+    // Execute each command sequentially
+    for (let i = 0; i < commands.length; i++) {
+      const cmd = commands[i]
+      
+      // Update status for each step
+      setMessages(prev => prev.map(m => 
+        m.id === assistantMessageId 
+          ? { 
+              ...m, 
+              steps: [
+                ...(m.steps || []),
+                {
+                  id: crypto.randomUUID(),
+                  type: "browsing",
+                  description: `Step ${i + 1}/${commands.length}: ${cmd.description}`,
+                  timestamp: new Date(),
+                }
+              ]
+            }
+          : m
+      ))
 
-    // Update with results
+      // Execute the command using agent-browser (bash)
+      const result = await executeBrowserCode(cmd.code, "bash")
+      
+      if (result?.result) {
+        allResults.push(result.result)
+      }
+      
+      // Small delay between commands to let browser update
+      if (i < commands.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    // Update with final results
+    const finalContent = allResults.length > 0 
+      ? `Task completed! Here are the results:\n\n${allResults.join("\n\n")}`
+      : "Task completed. Watch the browser panel to see what happened."
+
     setMessages(prev => prev.map(m => 
-      m.id === assistantMessage.id 
+      m.id === assistantMessageId 
         ? { 
             ...m, 
-            content: result?.result || "Task completed. Check the browser panel to see the results.",
+            content: finalContent,
             status: "completed",
             steps: [
               ...(m.steps || []),
               {
                 id: crypto.randomUUID(),
                 type: "complete",
-                description: "Browser task completed",
+                description: "All browser tasks completed",
                 timestamp: new Date(),
               }
             ]
@@ -314,57 +335,91 @@ export default function AgentsPage() {
     setCurrentTask("")
   }
 
-  // Generate Playwright code based on task description
-  const generatePlaywrightCode = (task: string): string => {
+  // Generate agent-browser commands based on task description
+  // agent-browser is a CLI pre-installed in Firecrawl sandbox with 40+ commands
+  const generateAgentBrowserCommands = (task: string): Array<{ code: string; description: string }> => {
     const taskLower = task.toLowerCase()
     
     // Extract URL if present
     const urlMatch = task.match(/https?:\/\/[^\s]+/i)
-    const url = urlMatch ? urlMatch[0] : "https://www.google.com"
+    const url = urlMatch ? urlMatch[0] : null
 
-    // Search task
-    if (taskLower.includes("search") || taskLower.includes("find") || taskLower.includes("look up")) {
-      const searchQuery = task.replace(/search|find|look up|for|on google|on the web/gi, "").trim()
-      return `
-await page.goto("https://www.google.com");
-await page.fill('textarea[name="q"]', '${searchQuery}');
-await page.keyboard.press('Enter');
-await page.waitForLoadState('networkidle');
-const results = await page.$$eval('h3', els => els.slice(0, 5).map(el => el.textContent));
-console.log(JSON.stringify(results, null, 2));
-      `.trim()
+    // Search task - use Google
+    if (taskLower.includes("search") || taskLower.includes("find") || taskLower.includes("look up") || taskLower.includes("google")) {
+      const searchQuery = task
+        .replace(/search|find|look up|for|on google|on the web|google/gi, "")
+        .replace(/https?:\/\/[^\s]+/gi, "")
+        .trim()
+      
+      return [
+        { code: `agent-browser open "https://www.google.com/search?q=${encodeURIComponent(searchQuery)}"`, description: `Searching Google for "${searchQuery}"` },
+        { code: `agent-browser snapshot`, description: "Taking snapshot of search results" },
+        { code: `agent-browser scrape`, description: "Extracting search results" },
+      ]
     }
 
-    // Navigate and scrape
-    if (taskLower.includes("go to") || taskLower.includes("visit") || taskLower.includes("open")) {
-      return `
-await page.goto("${url}");
-await page.waitForLoadState('networkidle');
-const title = await page.title();
-const content = await page.$eval('body', el => el.innerText.slice(0, 1000));
-console.log("Page Title: " + title);
-console.log("Content Preview: " + content);
-      `.trim()
+    // Navigate and scrape a specific URL
+    if (url || taskLower.includes("go to") || taskLower.includes("visit") || taskLower.includes("open") || taskLower.includes("navigate")) {
+      const targetUrl = url || "https://www.example.com"
+      return [
+        { code: `agent-browser open "${targetUrl}"`, description: `Opening ${targetUrl}` },
+        { code: `agent-browser snapshot`, description: "Taking snapshot of the page" },
+        { code: `agent-browser scrape`, description: "Extracting page content" },
+      ]
     }
 
-    // Screenshot task
-    if (taskLower.includes("screenshot") || taskLower.includes("capture")) {
-      return `
-await page.goto("${url}");
-await page.waitForLoadState('networkidle');
-const title = await page.title();
-console.log("Captured screenshot of: " + title);
-      `.trim()
+    // Screenshot/capture task
+    if (taskLower.includes("screenshot") || taskLower.includes("capture") || taskLower.includes("snapshot")) {
+      const targetUrl = url || "https://www.example.com"
+      return [
+        { code: `agent-browser open "${targetUrl}"`, description: `Opening ${targetUrl}` },
+        { code: `agent-browser snapshot`, description: "Capturing screenshot" },
+      ]
     }
 
-    // Default: navigate and get info
-    return `
-await page.goto("${url}");
-await page.waitForLoadState('networkidle');
-const title = await page.title();
-const url_final = page.url();
-console.log("Navigated to: " + title + " (" + url_final + ")");
-    `.trim()
+    // Fill form / interact
+    if (taskLower.includes("fill") || taskLower.includes("type") || taskLower.includes("enter") || taskLower.includes("input")) {
+      const targetUrl = url || "https://www.google.com"
+      return [
+        { code: `agent-browser open "${targetUrl}"`, description: `Opening ${targetUrl}` },
+        { code: `agent-browser snapshot`, description: "Analyzing page elements" },
+      ]
+    }
+
+    // Click something
+    if (taskLower.includes("click") || taskLower.includes("press") || taskLower.includes("tap")) {
+      const targetUrl = url || "https://www.example.com"
+      return [
+        { code: `agent-browser open "${targetUrl}"`, description: `Opening ${targetUrl}` },
+        { code: `agent-browser snapshot`, description: "Analyzing clickable elements" },
+      ]
+    }
+
+    // Scrape/extract data
+    if (taskLower.includes("scrape") || taskLower.includes("extract") || taskLower.includes("get data") || taskLower.includes("crawl")) {
+      const targetUrl = url || "https://www.example.com"
+      return [
+        { code: `agent-browser open "${targetUrl}"`, description: `Opening ${targetUrl}` },
+        { code: `agent-browser scrape`, description: "Extracting all data from page" },
+      ]
+    }
+
+    // Default: try to understand the task and execute sensibly
+    // If there's a URL, navigate to it. Otherwise go to Google and search the task
+    if (url) {
+      return [
+        { code: `agent-browser open "${url}"`, description: `Opening ${url}` },
+        { code: `agent-browser snapshot`, description: "Taking snapshot" },
+        { code: `agent-browser scrape`, description: "Extracting content" },
+      ]
+    } else {
+      // No URL - search for the task on Google
+      return [
+        { code: `agent-browser open "https://www.google.com/search?q=${encodeURIComponent(task)}"`, description: `Searching for "${task}"` },
+        { code: `agent-browser snapshot`, description: "Taking snapshot of results" },
+        { code: `agent-browser scrape`, description: "Extracting search results" },
+      ]
+    }
   }
 
   const handleSubmit = async () => {
