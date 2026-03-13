@@ -8,6 +8,7 @@ const heroTexts = [
   "What can I do for you?",
   "What do you want to know?",
   "Lightning Speed Chat in Turbo mode.",
+  "I can Browse and remove your Hassle, You Just WorkwithMe",
 ]
 
 export function HeroSection() {
